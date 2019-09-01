@@ -9,13 +9,15 @@ Forecast_func_w <- function(Y_in, X_in, s, sp, cell, Xf, Yf = NULL,
                             rho_a0 = 0.95,
                             a_y = 0.01, b_y = 0.01){
   
-  
+
+  ## Calling in necessary functions and loading packages  
   source(paste(getwd(),"/auxiliary/Rfunctions.R",sep=""))
   require(Rcpp)
   require(RcppArmadillo)
   sourceCpp(paste(getwd(),"/auxiliary/cppfuncs.cpp",sep=""))
   require(spdep)
   
+  ## Sorting out the input
   Hour_Y <- Y_in
   Hour_X <- X_in
   
@@ -46,6 +48,8 @@ Forecast_func_w <- function(Y_in, X_in, s, sp, cell, Xf, Yf = NULL,
   n_x <- nrow(X_in)
   
   KS <- ksx*ksy
+  
+  ## Dealing with missingness
   non_mis_y_ind <- which(!is.na(Hour_Y),arr.ind = TRUE)
   mis_y_ind <- which(is.na(Hour_Y),arr.ind = T)
   my_ind <- which(is.na(Hour_Y))
@@ -53,11 +57,14 @@ Forecast_func_w <- function(Y_in, X_in, s, sp, cell, Xf, Yf = NULL,
   if(length(mis_y_ind)>0){
   mis_B_ind <- cbind(mis_y_ind,1)
   }
+  
+  ## Prepping necessary objects for smoothing
   nhnmnum <- apply(Hour_Y,1,function(x){sum(!is.na(x))})
   s_y <- s
   s_x <- sp
   
-  
+  ## Unnecessary, but doesn't add much complexity
+  ## without the hassle to change structure of code
   x.proj <- unique(sp[,1])
   y.proj <- unique(sp[,2])
   m1 <- length(x.proj)
@@ -88,11 +95,13 @@ Forecast_func_w <- function(Y_in, X_in, s, sp, cell, Xf, Yf = NULL,
   nbx <- nhx*nsx
   nbxf <- nhxf*nsxf
   
+  ## Storage for smoothed processes
   Bptilde <- array(0,c(m1*m2,ncol(Hour_X),L))
   Bpftilde <- array(0,c(m1*m2,ncol(Xf),L))
   Xmat <- matrix(1,n_y*ncol(Hour_X),L+1)
   Xfmat <- matrix(1,n_x*ncol(Xf),L+1)
   
+  ## Smoothing for X (Returns X itself)
   for(nh in 1:ncol(Hour_X)){
     z <- fft(matrix(Hour_X[,nh],nx,ny),inverse=TRUE) 
     for(l in 1:L){
@@ -103,6 +112,8 @@ Forecast_func_w <- function(Y_in, X_in, s, sp, cell, Xf, Yf = NULL,
       Xmat[(((nh-1)*n_y + 1): (nh*n_y)),(l+1)] <- as.vector(tempbas)[cell]
     }
   }
+  
+  ## Smoothing for Xf (Prediction X, returns the same X)
   for(nh in 1:ncol(Xf)){
     zf <- fft(matrix(Xf[,nh],nx,ny),inverse=TRUE)
     for(l in 1:L){
@@ -114,10 +125,11 @@ Forecast_func_w <- function(Y_in, X_in, s, sp, cell, Xf, Yf = NULL,
     }
   }
   
+  ## Dealing with missingness
   Btilde <- subarr(Bptilde,cell)
   Btilde[mis_B_ind] <- 0
   
-  
+  ## Prepping for warping component
   A_mat <- matrix(0,KS,2)
   
   BB <- basis(s_x,ksx,ksy)
@@ -130,7 +142,9 @@ Forecast_func_w <- function(Y_in, X_in, s, sp, cell, Xf, Yf = NULL,
   knotsy <- BB$knotsy
   knotsS <- as.matrix(expand.grid(knotsx,knotsy))
   
+  ## Setting neighborhood structure
   
+  ## warping component
   temp_ob <- dnearneigh(knotsS,0,1)
   temp1 <- nb2listw(temp_ob)
   temp2 <- listw2sn(temp1)
@@ -142,11 +156,12 @@ Forecast_func_w <- function(Y_in, X_in, s, sp, cell, Xf, Yf = NULL,
   C_mat_as_inv <- chol(mat_as_inv)
   logdet_mat_as_inv <- 2*sum(log(diag(C_mat_as_inv)))
   
+  ## beta0
   mat_a0_inv <- DC - rho_a0*C
   C_mat_a0_inv <- chol(mat_a0_inv)
   hlogdet_mat_a0_inv <- sum(log(diag(C_mat_a0_inv)))
   
-  
+  ## smoothing component (unused)
   D_x_inv <- diag(L+1);
   if(L > 1){
     mat_x_inv <- 2*diag(L)
@@ -156,6 +171,7 @@ Forecast_func_w <- function(Y_in, X_in, s, sp, cell, Xf, Yf = NULL,
     D_x_inv[-1,-1] <- mat_x_inv
   }
   
+  ## Getting initial values
   Sig_2 <- diag(2)
   logdet_Sig_2 <- 0
   Sig_2_inv <- solve(Sig_2)
@@ -187,6 +203,7 @@ Forecast_func_w <- function(Y_in, X_in, s, sp, cell, Xf, Yf = NULL,
   b0 <- rep(0,KS)
   sigma_y <- summary(tempfit)$sigma^2
   
+  ## temp variables for step size correction
   tau.a <- rep(0.04,KS)
   tau.va <- tau.x <- 0.5
   tau.sig_a <- 0.5
@@ -196,6 +213,7 @@ Forecast_func_w <- function(Y_in, X_in, s, sp, cell, Xf, Yf = NULL,
   acc.va <- acc.x <- acc.sig_a <- 0
   acc.a0 <- 0
   
+  ## Storage for output variables and diagnostics
   keep.a <- array(0,dim=c((iters-burn)/thin,KS,2))
   keep.sigma_a <- rep(0,(iters-burn)/thin)
   keep.sigma_y <- rep(0,(iters-burn)/thin)
@@ -418,7 +436,7 @@ Forecast_func_w <- function(Y_in, X_in, s, sp, cell, Xf, Yf = NULL,
       
     }
     
-    
+    ## Prediction
     if(i > burn & i%%thin == 0){
       ws_x <- s_x + AS_x%*%A_mat
       keep.warp_sig[(i - burn)/thin,,] <- ws_x - s_x
@@ -450,6 +468,8 @@ Forecast_func_w <- function(Y_in, X_in, s, sp, cell, Xf, Yf = NULL,
   }
   
   Forecast <- tempforecastvec/((iters-burn)/thin)
+  
+  ## Getting significance of warp
   qarr <- apply(keep.warp_sig,2:3,"quantile",prob  = c(0.0125,0.9875))
   non_sig_ind <- which(qarr[1,,1] <= 0 & 0 <= qarr[2,,1] & qarr[1,,2] < 0 & 0 < qarr[2,,2])
   sig_ind <- setdiff(1:nrow(sp),non_sig_ind)
@@ -457,8 +477,9 @@ Forecast_func_w <- function(Y_in, X_in, s, sp, cell, Xf, Yf = NULL,
   
   
   
-  
+  ## Computing performance metric values
   if(!is.null(Yf)){Yfvec <- as.vector(Yf); MSE <- MSE/((iters - burn)/thin);  MAD <- MAD/((iters - burn)/thin); Cov <- mean(sapply(1:length(Yfvec),function(j){if(!is.na(Yfvec[j])){ttm <- sapply(forekeepmean,.subset2,j); tts <- sapply(forekeepsd,.subset2,j); q <- quantile(ttm + tts*rnorm((iters-burn)/thin),c(0.025,0.975)); return(as.numeric(q[1] <= Yfvec[j] & Yfvec[j] <= q[2]));}else{return(NA)}}),na.rm = T); CRPS <- mean(sapply(1:length(Yfvec),function(j){if(!is.na(Yfvec[j])){forec <- sapply(forekeepmean,.subset2,j); mean(abs(forec - Yfvec[j])) - 0.5*mean(sapply(1:((iters-burn)/thin),function(kk){mean(abs(forec[-kk] - forec[kk]))}))}else{return(NA)}}),na.rm = T)}else{MSE <- Cov <- MAD <- QS1 <- QS2 <- CRPS <- NA}      
+  
   ll <- list("Sigma_a" = keep.sigma_a,"a" = keep.a,"sigma_y" = keep.sigma_y, "forecast" = Forecast, "coverage" = Cov, "MSE" = MSE, "warphat" = warphat, "rho_a" = keep.rho_a, "rho_a0" = keep.rho_a0, "sigma_0" = keep.sigma_0, "b0" = keep.b0, "sig_ind" = sig_ind, "non_sig_ind" = non_sig_ind, "MAD" = MAD, "CRPS" = CRPS, "forekeepmean" = forekeepmean, "warp_y" = keep.warp_y)
   return(ll)
   
